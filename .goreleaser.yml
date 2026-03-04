@@ -21,7 +21,7 @@ builds:
         goarch: arm64
     main: .
     ldflags:
-      - -s -w
+      - -s -w -X github.com/DillonBarker/pm2ui/cmd.Version={{.Version}}
 
 archives:
   - format: tar.gz
