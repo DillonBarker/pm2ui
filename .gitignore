@@ -1,2 +1,17 @@
-.claude
+# Binary outputs
 pm2ui
+pm2ui.exe
+
+# GoReleaser output
+dist/
+
+# Editor / IDE
+.claude
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
