@@ -191,18 +191,20 @@ func readLastLines(f *os.File, n int) []string {
 var ansiRegex = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
 
 func ansiToTview(s string) string {
-	// Escape tview's tag brackets first
-	s = strings.ReplaceAll(s, "[", "[[]")
-
-	result := ansiRegex.ReplaceAllStringFunc(s, func(match string) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range ansiRegex.FindAllStringIndex(s, -1) {
+		segment := s[last:loc[0]]
+		b.WriteString(strings.ReplaceAll(segment, "[", "[[]"))
+		match := s[loc[0]:loc[1]]
 		codes := ansiRegex.FindStringSubmatch(match)
-		if len(codes) < 2 {
-			return ""
+		if len(codes) >= 2 {
+			b.WriteString(ansiCodeToTag(codes[1]))
 		}
-		return ansiCodeToTag(codes[1])
-	})
-
-	return result
+		last = loc[1]
+	}
+	b.WriteString(strings.ReplaceAll(s[last:], "[", "[[]"))
+	return b.String()
 }
 
 func ansiCodeToTag(code string) string {
