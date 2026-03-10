@@ -11,13 +11,14 @@ const helpText = `[::b]pm2ui — Key Bindings[-::-]
   j / ↓          Move down
   k / ↑          Move up
   /              Filter by name
-  Esc            Go back / clear filter
+  Esc            Back to all logs / clear filter
 
 [yellow]Process Actions[-]
-  l              View logs
+  Enter          View logs for selected service
+  Space          Toggle multi-select (watch subset of services)
+  u              Start stopped process
   r              Restart process (--update-env)
   s              Stop process (confirms)
-  Enter          Start stopped process
   d              Delete process (confirms)
 
 [yellow]Sorting (Process Table)[-]
@@ -26,10 +27,11 @@ const helpText = `[::b]pm2ui — Key Bindings[-::-]
   Shift+P        Sort by PID
   Shift+U        Sort by uptime
 
-[yellow]Log Viewer[-]
-  t              Toggle stdout/stderr/both
+[yellow]Log Panel (right side)[-]
+  t              Toggle stdout/stderr/both (single-service mode)
   a              Toggle autoscroll
   w              Toggle word wrap
+  Esc            Return to all-services / multi-select logs
 
 [yellow]Commands (:)[-]
   :restart all   Restart all processes
@@ -39,9 +41,16 @@ const helpText = `[::b]pm2ui — Key Bindings[-::-]
   :flush         Clear all log files
   :q!            Quit
 
+[yellow]Log History[-]
+  0              Tail (live from end)
+  1              Head (from start of file)
+  2 / 3          Last 50 / 100 lines
+  4 / 5 / 6      Last 200 / 500 / 1000 lines
+
 [yellow]General[-]
+  l              Focus logs (scroll)
+  Esc            Back to process list
   ?              Toggle this help
-  q              Quit
 
 [gray]Press Esc or ? to close[-]`
 

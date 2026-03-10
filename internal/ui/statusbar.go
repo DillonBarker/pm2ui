@@ -19,30 +19,19 @@ type StatusBar struct {
 
 // NewStatusBar creates a new status bar header.
 func NewStatusBar() *StatusBar {
-	logo := tview.NewTextView()
-	logo.SetDynamicColors(true)
-	logo.SetBackgroundColor(tcell.ColorDefault)
-	logo.SetTextColor(tcell.ColorDefault)
-	logo.SetText("[aqua::b]pm2ui[-::-]")
-	logo.SetTextAlign(tview.AlignLeft)
-
 	info := tview.NewTextView()
 	info.SetDynamicColors(true)
 	info.SetBackgroundColor(tcell.ColorDefault)
 	info.SetTextColor(tcell.ColorDefault)
-	info.SetTextAlign(tview.AlignRight)
+	info.SetTextAlign(tview.AlignLeft)
 
 	hints := tview.NewTextView()
 	hints.SetDynamicColors(true)
 	hints.SetBackgroundColor(tcell.ColorDefault)
 	hints.SetTextColor(tcell.ColorDefault)
 
-	topRow := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(logo, 12, 0, false).
-		AddItem(info, 0, 1, false)
-
 	flex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(topRow, 1, 0, false).
+		AddItem(info, 1, 0, false).
 		AddItem(hints, 1, 0, false)
 
 	return &StatusBar{

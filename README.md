@@ -57,22 +57,23 @@ pm2ui connects to your local PM2 daemon and displays all running processes in an
 
 ### Navigation
 
-| Key      | Action                 |
-|----------|------------------------|
-| `j` / `↓` | Move down            |
-| `k` / `↑` | Move up              |
-| `/`      | Filter by name         |
-| `Esc`    | Go back / clear filter |
+| Key        | Action                 |
+|------------|------------------------|
+| `j` / `↓` | Move down              |
+| `k` / `↑` | Move up                |
+| `/`        | Filter by name         |
+| `Esc`      | Go back / clear filter |
 
 ### Process Actions
 
-| Key     | Action          |
-|---------|-----------------|
-| `l`     | View logs       |
-| `r`     | Restart process |
-| `s`     | Stop process    |
-| `Enter` | Start process   |
-| `d`     | Delete process  |
+| Key     | Action                                      |
+|---------|---------------------------------------------|
+| `Enter` | View logs for selected process              |
+| `Space` | Toggle multi-select (watch subset of logs)  |
+| `u`     | Start stopped process                       |
+| `r`     | Restart process                             |
+| `s`     | Stop process                                |
+| `d`     | Delete process                              |
 
 ### Sorting (Process Table)
 
@@ -85,29 +86,44 @@ pm2ui connects to your local PM2 daemon and displays all running processes in an
 
 ### Log Viewer
 
-| Key | Action                        |
-|-----|-------------------------------|
-| `t` | Toggle stdout / stderr / both |
-| `a` | Toggle autoscroll             |
-| `w` | Toggle word wrap              |
+These keys work globally regardless of which panel has focus.
+
+| Key | Action                                          |
+|-----|-------------------------------------------------|
+| `t` | Toggle stdout / stderr / both (single-process)  |
+| `a` | Toggle autoscroll                               |
+| `w` | Toggle word wrap                                |
+
+### Log History
+
+| Key      | Action              |
+|----------|---------------------|
+| `0`      | Tail (live from end)|
+| `1`      | Head (from start)   |
+| `2`      | Last 50 lines       |
+| `3`      | Last 100 lines      |
+| `4`      | Last 200 lines      |
+| `5`      | Last 500 lines      |
+| `6`      | Last 1000 lines     |
 
 ### Commands (`:`)
 
-| Command        | Action                          |
-|----------------|---------------------------------|
-| `:restart all` | Restart all processes           |
-| `:stop all`    | Stop all processes              |
-| `:reload all`  | Graceful reload (cluster mode)  |
-| `:save`        | Persist process list to disk    |
-| `:flush`       | Clear all log files             |
-| `:q!`          | Quit                            |
+| Command        | Action                         |
+|----------------|--------------------------------|
+| `:restart all` | Restart all processes          |
+| `:stop all`    | Stop all processes             |
+| `:reload all`  | Graceful reload (cluster mode) |
+| `:save`        | Persist process list to disk   |
+| `:flush`       | Clear all log files            |
+| `:q!`          | Quit                           |
 
 ### General
 
-| Key | Action      |
-|-----|-------------|
-| `?` | Toggle help |
-| `q` | Quit        |
+| Key   | Action                    |
+|-------|---------------------------|
+| `l`   | Focus logs panel (scroll) |
+| `Esc` | Back to process list      |
+| `?`   | Toggle help               |
 
 ## License
 

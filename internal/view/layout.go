@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/DillonBarker/pm2ui/internal/model"
 	"github.com/DillonBarker/pm2ui/internal/pm2"
@@ -20,6 +21,8 @@ type Layout struct {
 	logsView     *LogsView
 	processModel *model.ProcessTable
 	flashWidget  *ui.FlashWidget
+	allProcs     []pm2.Process
+	logsFocused  bool
 }
 
 // NewLayout creates the main application layout.
@@ -121,19 +124,24 @@ func NewLayout() *Layout {
 
 // Run starts the TUI application.
 func (l *Layout) Run() error {
-	// Wire watcher -> model
+	initialized := false
 	l.watcher.OnUpdate(func(procs []pm2.Process) {
+		l.allProcs = procs
 		l.processModel.Update(procs)
+		if !initialized {
+			initialized = true
+			l.app.QueueUpdateDraw(func() {
+				l.logsView.ShowAll(procs)
+			})
+		}
 	})
 
-	// Wire watcher errors -> flash
 	l.watcher.OnError(func(err error) {
 		l.app.QueueUpdateDraw(func() {
 			l.Flash(ui.FlashError, fmt.Sprintf("PM2: %v", err))
 		})
 	})
 
-	// Wire model -> view
 	l.processModel.OnChange(func(procs []pm2.Process) {
 		l.processView.UpdateProcesses(procs)
 	})
@@ -141,14 +149,15 @@ func (l *Layout) Run() error {
 	// Add flash widget to process view layout
 	l.processView.Layout().AddItem(l.flashWidget, 1, 0, false)
 
-	// Setup pages
-	l.app.Pages.AddPage("processes", l.processView.Layout(), true, true)
-	l.app.Pages.AddPage("logs", l.logsView.Layout(), true, false)
+	// Split view: processes left, logs right
+	splitView := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(l.processView.Layout(), 0, 1, true).
+		AddItem(l.logsView.Layout(), 0, 2, false)
 
-	// Global key handler
+	l.app.Pages.AddPage("main", splitView, true, true)
+
 	l.setupGlobalKeys()
 
-	// Start watcher
 	l.watcher.Start()
 	defer l.watcher.Stop()
 
@@ -157,9 +166,17 @@ func (l *Layout) Run() error {
 
 func (l *Layout) wireActions() {
 	l.processView.SetOnViewLogs(func(proc pm2.Process) {
-		l.logsView.Show(proc)
-		l.app.Pages.SwitchToPage("logs")
+		l.logsView.ShowSingle(proc)
+		l.logsFocused = true
 		l.app.SetFocus(l.logsView.panel)
+	})
+
+	l.processView.SetOnSelectionChange(func(selected []pm2.Process) {
+		if len(selected) == 0 {
+			l.logsView.ShowAll(l.allProcs)
+		} else {
+			l.logsView.ShowMulti(selected)
+		}
 	})
 
 	l.processView.SetOnRestart(func(proc pm2.Process) {
@@ -247,18 +264,47 @@ func (l *Layout) setupGlobalKeys() {
 		switch event.Key() {
 		case tcell.KeyRune:
 			switch event.Rune() {
+			case 'l':
+				l.logsFocused = true
+				l.app.SetFocus(l.logsView.panel)
+				return nil
 			case '?':
 				l.showHelp()
+				return nil
+			case 'a':
+				l.logsView.ToggleAutoScroll()
+				return nil
+			case 'w':
+				l.logsView.ToggleWordWrap()
+				return nil
+			case 't':
+				l.logsView.ToggleStream()
+				return nil
+			case '0':
+				l.logsView.SetFilter(pm2.LogFilter{})
+				return nil
+			case '1':
+				l.logsView.SetFilter(pm2.LogFilter{Mode: pm2.FilterHead})
+				return nil
+			case '2':
+				l.logsView.SetFilter(pm2.LogFilter{Mode: pm2.FilterLastN, Lines: 50})
+				return nil
+			case '3':
+				l.logsView.SetFilter(pm2.LogFilter{Mode: pm2.FilterLastN, Lines: 100})
+				return nil
+			case '4':
+				l.logsView.SetFilter(pm2.LogFilter{Mode: pm2.FilterLastN, Lines: 200})
+				return nil
+			case '5':
+				l.logsView.SetFilter(pm2.LogFilter{Mode: pm2.FilterLastN, Lines: 500})
+				return nil
+			case '6':
+				l.logsView.SetFilter(pm2.LogFilter{Mode: pm2.FilterLastN, Lines: 1000})
 				return nil
 			}
 		case tcell.KeyEsc:
 			name, _ := l.app.Pages.GetFrontPage()
 			switch name {
-			case "logs":
-				l.logsView.Stop()
-				l.app.Pages.SwitchToPage("processes")
-				l.app.SetFocus(l.processView.table)
-				return nil
 			case "help":
 				l.app.Pages.RemovePage("help")
 				l.app.SetFocus(l.processView.table)
@@ -267,9 +313,27 @@ func (l *Layout) setupGlobalKeys() {
 				l.app.Pages.RemovePage("confirm")
 				l.app.SetFocus(l.processView.table)
 				return nil
-			case "processes":
-				// Clear any active filter when Esc is pressed on the processes page
-				// (handles the case where the filter bar is visible but not in edit mode).
+			default:
+				if l.logsFocused {
+					l.logsFocused = false
+					l.app.SetFocus(l.processView.table)
+					return nil
+				}
+				if l.logsView.Mode() == logModeSingle {
+					selected := l.processView.SelectedProcesses()
+					if len(selected) > 0 {
+						l.logsView.ShowMulti(selected)
+					} else {
+						l.logsView.ShowAll(l.allProcs)
+					}
+					l.logsFocused = false
+					l.app.SetFocus(l.processView.table)
+					return nil
+				}
+				if len(l.processView.SelectedProcesses()) > 0 {
+					l.processView.ClearSelections()
+					return nil
+				}
 				if l.processModel.Filter() != "" {
 					l.processView.ClearFilter()
 					return nil

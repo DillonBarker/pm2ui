@@ -19,28 +19,117 @@ const (
 	LogBoth
 )
 
+type FilterMode int
+
+const (
+	FilterTail  FilterMode = iota
+	FilterHead
+	FilterLastN
+)
+
+type LogFilter struct {
+	Mode  FilterMode
+	Lines int
+}
+
 // LogLine represents a single line from a log file.
 type LogLine struct {
-	Text   string
-	Stream LogStream
+	Text        string
+	Stream      LogStream
+	ProcessName string
+}
+
+// MultiLogTailer merges log output from multiple processes into one channel.
+type MultiLogTailer struct {
+	procs   []Process
+	tailers []*LogTailer
+	lines   chan LogLine
+	stopCh  chan struct{}
+	mu      sync.Mutex
+	stopped bool
+}
+
+// NewMultiLogTailer creates a tailer that merges logs from all given processes.
+func NewMultiLogTailer(procs []Process, filter LogFilter) *MultiLogTailer {
+	perSvcFilter := filter
+	if filter.Mode == FilterLastN && len(procs) > 1 {
+		n := filter.Lines / len(procs)
+		if n < 1 {
+			n = 1
+		}
+		perSvcFilter.Lines = n
+	}
+	mt := &MultiLogTailer{
+		procs:  procs,
+		lines:  make(chan LogLine, 1000),
+		stopCh: make(chan struct{}),
+	}
+	for _, p := range procs {
+		mt.tailers = append(mt.tailers, NewLogTailer(p.PM2Env.PMOutLogPath, p.PM2Env.PMErrLogPath, perSvcFilter))
+	}
+	return mt
+}
+
+// Lines returns the merged channel of log lines.
+func (mt *MultiLogTailer) Lines() <-chan LogLine {
+	return mt.lines
+}
+
+// Start begins tailing all processes and merging their output.
+func (mt *MultiLogTailer) Start() {
+	for i, t := range mt.tailers {
+		t := t
+		name := mt.procs[i].Name
+		t.Start()
+		go func() {
+			for {
+				select {
+				case line := <-t.Lines():
+					line.ProcessName = name
+					select {
+					case mt.lines <- line:
+					case <-mt.stopCh:
+						return
+					}
+				case <-mt.stopCh:
+					return
+				}
+			}
+		}()
+	}
+}
+
+// Stop stops all sub-tailers.
+func (mt *MultiLogTailer) Stop() {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if !mt.stopped {
+		mt.stopped = true
+		close(mt.stopCh)
+		for _, t := range mt.tailers {
+			t.Stop()
+		}
+	}
 }
 
 // LogTailer tails PM2 log files for a process.
 type LogTailer struct {
-	outPath  string
-	errPath  string
-	stream   LogStream
-	lines    chan LogLine
-	stopCh   chan struct{}
-	mu       sync.Mutex
-	stopped  bool
+	outPath string
+	errPath string
+	filter  LogFilter
+	stream  LogStream
+	lines   chan LogLine
+	stopCh  chan struct{}
+	mu      sync.Mutex
+	stopped bool
 }
 
 // NewLogTailer creates a tailer for the given log file paths.
-func NewLogTailer(outPath, errPath string) *LogTailer {
+func NewLogTailer(outPath, errPath string, filter LogFilter) *LogTailer {
 	return &LogTailer{
 		outPath: outPath,
 		errPath: errPath,
+		filter:  filter,
 		stream:  LogBoth,
 		lines:   make(chan LogLine, 1000),
 		stopCh:  make(chan struct{}),
@@ -94,16 +183,17 @@ func (lt *LogTailer) tailFile(path string, stream LogStream) {
 	}
 	defer f.Close()
 
-	// Seek to get last 100 lines
-	lines := readLastLines(f, 100)
-	for _, line := range lines {
-		if !lt.shouldSend(stream) {
-			continue
+	switch lt.filter.Mode {
+	case FilterLastN:
+		for _, line := range readLastLines(f, lt.filter.Lines) {
+			lt.sendLine(line, stream)
 		}
-		lt.sendLine(line, stream)
+	case FilterHead:
+		readFromStart(f)
+	default:
+		readLastLines(f, 0)
 	}
 
-	// Now tail for new data
 	reader := bufio.NewReader(f)
 	for {
 		select {
@@ -128,6 +218,10 @@ func (lt *LogTailer) tailFile(path string, stream LogStream) {
 	}
 }
 
+func readFromStart(f *os.File) {
+	_, _ = f.Seek(0, io.SeekStart)
+}
+
 func (lt *LogTailer) shouldSend(stream LogStream) bool {
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
@@ -144,6 +238,11 @@ func (lt *LogTailer) sendLine(text string, stream LogStream) {
 
 // readLastLines reads the last n lines from a file.
 func readLastLines(f *os.File, n int) []string {
+	if n == 0 {
+		_, _ = f.Seek(0, io.SeekEnd)
+		return nil
+	}
+
 	info, err := f.Stat()
 	if err != nil || info.Size() == 0 {
 		return nil

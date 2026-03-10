@@ -12,6 +12,12 @@ import (
 	"github.com/DillonBarker/pm2ui/internal/ui"
 )
 
+const pm2uiLogo = `[aqua::b]  ____  __  __ ____  _   _ ___ [-::-]
+[aqua::b] |  _ \|  \/  |___ \| | | |_ _|[-::-]
+[aqua::b] | |_) | |\/| | __) | | | || | [-::-]
+[aqua::b] |  __/| |  | |/ __/| |_| || | [-::-]
+[aqua::b] |_|   |_|  |_|____/ \___/|___|[-::-]`
+
 var processColumns = []ui.Column{
 	{Title: "NAME", Expansion: 2},
 	{Title: "STATUS", Expansion: 1},
@@ -33,16 +39,18 @@ type ProcessView struct {
 	model           *model.ProcessTable
 	app             *ui.App
 	selected        string // preserve selection by name across refreshes
+	selections      map[string]bool
 	Filtering       bool
 	Commanding      bool
 
 	// callbacks
-	onViewLogs func(proc pm2.Process)
-	onRestart  func(proc pm2.Process)
-	onStop     func(proc pm2.Process)
-	onStart    func(proc pm2.Process)
-	onDelete   func(proc pm2.Process)
-	onCommand  func(cmd string)
+	onViewLogs        func(proc pm2.Process)
+	onRestart         func(proc pm2.Process)
+	onStop            func(proc pm2.Process)
+	onStart           func(proc pm2.Process)
+	onDelete          func(proc pm2.Process)
+	onCommand         func(cmd string)
+	onSelectionChange func([]pm2.Process)
 }
 
 // NewProcessView creates a new process table view.
@@ -50,10 +58,11 @@ func NewProcessView(app *ui.App, m *model.ProcessTable) *ProcessView {
 	table := ui.NewTable(processColumns)
 	statusBar := ui.NewStatusBar()
 	statusBar.SetKeyHints([]ui.KeyHint{
-		{Key: "l", Action: "logs"},
+		{Key: "Enter", Action: "logs"},
+		{Key: "Space", Action: "toggle select"},
+		{Key: "u", Action: "start"},
 		{Key: "r", Action: "restart"},
 		{Key: "s", Action: "stop"},
-		{Key: "Enter", Action: "start"},
 		{Key: "d", Action: "delete"},
 		{Key: "/", Action: "filter"},
 		{Key: ":", Action: "command"},
@@ -75,6 +84,15 @@ func NewProcessView(app *ui.App, m *model.ProcessTable) *ProcessView {
 	filterContainer.SetTitle(" Filter ")
 	filterContainer.SetTitleColor(tcell.ColorOrange)
 	filterContainer.SetBackgroundColor(tcell.ColorDefault)
+
+	asciiLogo := tview.NewTextView()
+	asciiLogo.SetDynamicColors(true)
+	asciiLogo.SetBackgroundColor(tcell.ColorDefault)
+	asciiLogo.SetText(pm2uiLogo)
+
+	headerFlex := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(statusBar, 0, 1, false).
+		AddItem(asciiLogo, 35, 0, false)
 
 	// Table in a bordered frame
 	tableFrame := tview.NewFrame(table).
@@ -101,7 +119,7 @@ func NewProcessView(app *ui.App, m *model.ProcessTable) *ProcessView {
 	cmdContainer.SetBackgroundColor(tcell.ColorDefault)
 
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(statusBar, 2, 0, false).
+		AddItem(headerFlex, 5, 0, false).
 		AddItem(filterContainer, 0, 0, false). // hidden by default; shown below status bar when filtering
 		AddItem(cmdContainer, 0, 0, false).    // hidden by default; shown below status bar when commanding
 		AddItem(tableFrame, 0, 1, true)
@@ -128,9 +146,25 @@ func (pv *ProcessView) Layout() *tview.Flex {
 	return pv.layout
 }
 
-// SetOnViewLogs sets the callback for when user presses 'l'.
+// SetOnViewLogs sets the callback for when user presses Enter.
 func (pv *ProcessView) SetOnViewLogs(fn func(pm2.Process)) {
 	pv.onViewLogs = fn
+}
+
+// SetOnSelectionChange sets the callback invoked when Space-toggle selections change.
+func (pv *ProcessView) SetOnSelectionChange(fn func([]pm2.Process)) {
+	pv.onSelectionChange = fn
+}
+
+// SelectedProcesses returns the processes currently toggled via Space.
+func (pv *ProcessView) SelectedProcesses() []pm2.Process {
+	var result []pm2.Process
+	for _, p := range pv.model.Processes() {
+		if pv.selections[p.Name] {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // SetOnRestart sets the callback for restart action.
@@ -161,6 +195,15 @@ func (pv *ProcessView) UpdateProcesses(procs []pm2.Process) {
 	})
 }
 
+// ClearSelections deselects all toggled processes and updates the log view.
+func (pv *ProcessView) ClearSelections() {
+	pv.selections = nil
+	pv.refreshFromFilter()
+	if pv.onSelectionChange != nil {
+		pv.onSelectionChange(nil)
+	}
+}
+
 // ClearFilter clears the active filter and hides the filter bar.
 // Safe to call from the event loop.
 func (pv *ProcessView) ClearFilter() {
@@ -180,11 +223,11 @@ func (pv *ProcessView) refreshFromFilter() {
 }
 
 func (pv *ProcessView) renderTable(procs []pm2.Process) {
-	// Remember selection
+	// Remember selection by name (strip any ✓ prefix)
 	if row := pv.table.SelectedDataRow(); row >= 0 {
 		cell := pv.table.GetCell(row+1, 0)
 		if cell != nil {
-			pv.selected = tview.TranslateANSI(cell.Text)
+			pv.selected = strings.TrimPrefix(tview.TranslateANSI(cell.Text), "✓ ")
 		}
 	}
 
@@ -202,9 +245,13 @@ func (pv *ProcessView) renderTable(procs []pm2.Process) {
 
 	newSelectedRow := -1
 	for i, p := range procs {
+		name := p.Name
+		if pv.selections[p.Name] {
+			name = "✓ " + name
+		}
 		statusColor := statusToColor(p.PM2Env.Status)
 		pv.table.SetRow(i,
-			p.Name,
+			name,
 			fmt.Sprintf("[%s]%s[-]", statusColor, p.PM2Env.Status),
 			fmt.Sprintf("%d", p.PID),
 			p.FormatUptime(),
@@ -253,9 +300,14 @@ func (pv *ProcessView) setupKeys() {
 			case ':':
 				pv.startCmd()
 				return nil
-			case 'l':
-				if p, ok := pv.selectedProcess(); ok && pv.onViewLogs != nil {
-					pv.onViewLogs(p)
+			case ' ':
+				if p, ok := pv.selectedProcess(); ok {
+					pv.toggleSelection(p)
+				}
+				return nil
+			case 'u':
+				if p, ok := pv.selectedProcess(); ok && pv.onStart != nil {
+					pv.onStart(p)
 				}
 				return nil
 			case 'r':
@@ -287,8 +339,8 @@ func (pv *ProcessView) setupKeys() {
 				return nil
 			}
 		case tcell.KeyEnter:
-			if p, ok := pv.selectedProcess(); ok && pv.onStart != nil {
-				pv.onStart(p)
+			if p, ok := pv.selectedProcess(); ok && pv.onViewLogs != nil {
+				pv.onViewLogs(p)
 			}
 			return nil
 		}
@@ -345,6 +397,21 @@ func (pv *ProcessView) setupKeys() {
 		}
 		return event
 	})
+}
+
+func (pv *ProcessView) toggleSelection(p pm2.Process) {
+	if pv.selections == nil {
+		pv.selections = make(map[string]bool)
+	}
+	if pv.selections[p.Name] {
+		delete(pv.selections, p.Name)
+	} else {
+		pv.selections[p.Name] = true
+	}
+	pv.refreshFromFilter()
+	if pv.onSelectionChange != nil {
+		pv.onSelectionChange(pv.SelectedProcesses())
+	}
 }
 
 func (pv *ProcessView) startFilter() {
