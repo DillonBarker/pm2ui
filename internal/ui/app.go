@@ -12,7 +12,7 @@ type App struct {
 }
 
 // NewApp creates a new TUI application with a Pages container.
-func NewApp() *App {
+func NewApp(enableMouse bool) *App {
 	app := tview.NewApplication()
 	pages := tview.NewPages()
 
@@ -22,7 +22,7 @@ func NewApp() *App {
 	}
 
 	app.SetRoot(pages, true)
-	app.EnableMouse(false)
+	app.EnableMouse(enableMouse)
 
 	return a
 }

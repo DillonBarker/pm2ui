@@ -2,6 +2,7 @@ package view
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -22,6 +23,9 @@ var processColumns = []ui.Column{
 	{Title: "NAME", Expansion: 2},
 	{Title: "STATUS", Expansion: 1},
 	{Title: "PID", Expansion: 1, AlignRight: true},
+	{Title: "CPU", Expansion: 1, AlignRight: true},
+	{Title: "MEM", Expansion: 1, AlignRight: true},
+	{Title: "↺", Expansion: 1, AlignRight: true},
 	{Title: "UPTIME", Expansion: 1, AlignRight: true},
 }
 
@@ -43,12 +47,14 @@ type ProcessView struct {
 	Filtering       bool
 	Commanding      bool
 
-	// callbacks
+	// callbacks; action callbacks receive the Space-selection when one is
+	// active, otherwise the cursor row (k9s bulk semantics).
 	onViewLogs        func(proc pm2.Process)
-	onRestart         func(proc pm2.Process)
-	onStop            func(proc pm2.Process)
-	onStart           func(proc pm2.Process)
-	onDelete          func(proc pm2.Process)
+	onDescribe        func(proc pm2.Process)
+	onRestart         func(procs []pm2.Process)
+	onStop            func(procs []pm2.Process)
+	onStart           func(procs []pm2.Process)
+	onDelete          func(procs []pm2.Process)
 	onCommand         func(cmd string)
 	onSelectionChange func([]pm2.Process)
 }
@@ -60,6 +66,7 @@ func NewProcessView(app *ui.App, m *model.ProcessTable) *ProcessView {
 	statusBar.SetKeyHints([]ui.KeyHint{
 		{Key: "Enter", Action: "logs"},
 		{Key: "Space", Action: "toggle select"},
+		{Key: "i", Action: "describe"},
 		{Key: "u", Action: "start"},
 		{Key: "r", Action: "restart"},
 		{Key: "s", Action: "stop"},
@@ -151,6 +158,11 @@ func (pv *ProcessView) SetOnViewLogs(fn func(pm2.Process)) {
 	pv.onViewLogs = fn
 }
 
+// SetOnDescribe sets the callback for the describe action.
+func (pv *ProcessView) SetOnDescribe(fn func(pm2.Process)) {
+	pv.onDescribe = fn
+}
+
 // SetOnSelectionChange sets the callback invoked when Space-toggle selections change.
 func (pv *ProcessView) SetOnSelectionChange(fn func([]pm2.Process)) {
 	pv.onSelectionChange = fn
@@ -168,31 +180,79 @@ func (pv *ProcessView) SelectedProcesses() []pm2.Process {
 }
 
 // SetOnRestart sets the callback for restart action.
-func (pv *ProcessView) SetOnRestart(fn func(pm2.Process)) {
+func (pv *ProcessView) SetOnRestart(fn func([]pm2.Process)) {
 	pv.onRestart = fn
 }
 
 // SetOnStop sets the callback for stop action.
-func (pv *ProcessView) SetOnStop(fn func(pm2.Process)) {
+func (pv *ProcessView) SetOnStop(fn func([]pm2.Process)) {
 	pv.onStop = fn
 }
 
 // SetOnStart sets the callback for start action.
-func (pv *ProcessView) SetOnStart(fn func(pm2.Process)) {
+func (pv *ProcessView) SetOnStart(fn func([]pm2.Process)) {
 	pv.onStart = fn
 }
 
 // SetOnDelete sets the callback for delete action.
-func (pv *ProcessView) SetOnDelete(fn func(pm2.Process)) {
+func (pv *ProcessView) SetOnDelete(fn func([]pm2.Process)) {
 	pv.onDelete = fn
+}
+
+// actionTargets returns what an action key should operate on: the Space
+// selection when one exists, else the cursor row.
+func (pv *ProcessView) actionTargets() []pm2.Process {
+	if selected := pv.SelectedProcesses(); len(selected) > 0 {
+		return selected
+	}
+	if p, ok := pv.selectedProcess(); ok {
+		return []pm2.Process{p}
+	}
+	return nil
+}
+
+// DeselectNames removes the given names from the Space selection and
+// refreshes the view. Event-loop only.
+func (pv *ProcessView) DeselectNames(names []string) {
+	if pv.selections == nil {
+		return
+	}
+	changed := false
+	for _, n := range names {
+		if pv.selections[n] {
+			delete(pv.selections, n)
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	pv.refreshFromFilter()
+	if pv.onSelectionChange != nil {
+		pv.onSelectionChange(pv.SelectedProcesses())
+	}
+}
+
+// SetFocused highlights or dims the table frame border.
+func (pv *ProcessView) SetFocused(on bool) {
+	if on {
+		pv.tableFrame.SetBorderColor(tcell.ColorAqua)
+	} else {
+		pv.tableFrame.SetBorderColor(tcell.ColorDarkCyan)
+	}
 }
 
 // UpdateProcesses updates the table with the given process list.
 func (pv *ProcessView) UpdateProcesses(procs []pm2.Process) {
 	pv.app.QueueUpdateDraw(func() {
 		pv.renderTable(procs)
-		pv.statusBar.Update(procs, pv.model.TotalCount(), pv.model.Filter())
+		pv.statusBar.Update(procs, pv.model.TotalCount(), pv.model.Filter(), pv.model.Namespace())
 	})
+}
+
+// Refresh re-renders the table from current model state. Event-loop only.
+func (pv *ProcessView) Refresh() {
+	pv.refreshFromFilter()
 }
 
 // ClearSelections deselects all toggled processes and updates the log view.
@@ -219,7 +279,7 @@ func (pv *ProcessView) ClearFilter() {
 func (pv *ProcessView) refreshFromFilter() {
 	filtered := pv.model.Processes()
 	pv.renderTable(filtered)
-	pv.statusBar.Update(filtered, pv.model.TotalCount(), pv.model.Filter())
+	pv.statusBar.Update(filtered, pv.model.TotalCount(), pv.model.Filter(), pv.model.Namespace())
 }
 
 func (pv *ProcessView) renderTable(procs []pm2.Process) {
@@ -235,7 +295,7 @@ func (pv *ProcessView) renderTable(procs []pm2.Process) {
 	pv.tableFrame.SetTitle(fmt.Sprintf(" Processes[[white]%d[-]] ", len(procs)))
 
 	if len(procs) == 0 {
-		pv.table.SetRow(0, "[gray]No processes found[-]", "", "", "")
+		pv.table.SetRow(0, "[gray]No processes found[-]", "", "", "", "", "", "")
 		return
 	}
 
@@ -250,10 +310,20 @@ func (pv *ProcessView) renderTable(procs []pm2.Process) {
 			name = "✓ " + name
 		}
 		statusColor := statusToColor(p.PM2Env.Status)
+		restartColor := "gray"
+		switch {
+		case p.PM2Env.Status == pm2.StatusErrored && p.PM2Env.RestartTime > 0:
+			restartColor = "red"
+		case p.PM2Env.RestartTime > 0:
+			restartColor = "yellow"
+		}
 		pv.table.SetRow(i,
 			name,
 			fmt.Sprintf("[%s]%s[-]", statusColor, p.PM2Env.Status),
 			fmt.Sprintf("%d", p.PID),
+			fmt.Sprintf("%.1f%%", p.Monit.CPU),
+			p.FormatMemory(),
+			fmt.Sprintf("[%s]%d[-]", restartColor, p.PM2Env.RestartTime),
 			p.FormatUptime(),
 		)
 		if p.Name == pv.selected {
@@ -306,23 +376,28 @@ func (pv *ProcessView) setupKeys() {
 				}
 				return nil
 			case 'u':
-				if p, ok := pv.selectedProcess(); ok && pv.onStart != nil {
-					pv.onStart(p)
+				if targets := pv.actionTargets(); len(targets) > 0 && pv.onStart != nil {
+					pv.onStart(targets)
 				}
 				return nil
 			case 'r':
-				if p, ok := pv.selectedProcess(); ok && pv.onRestart != nil {
-					pv.onRestart(p)
+				if targets := pv.actionTargets(); len(targets) > 0 && pv.onRestart != nil {
+					pv.onRestart(targets)
 				}
 				return nil
 			case 's':
-				if p, ok := pv.selectedProcess(); ok && pv.onStop != nil {
-					pv.onStop(p)
+				if targets := pv.actionTargets(); len(targets) > 0 && pv.onStop != nil {
+					pv.onStop(targets)
 				}
 				return nil
 			case 'd':
-				if p, ok := pv.selectedProcess(); ok && pv.onDelete != nil {
-					pv.onDelete(p)
+				if targets := pv.actionTargets(); len(targets) > 0 && pv.onDelete != nil {
+					pv.onDelete(targets)
+				}
+				return nil
+			case 'i':
+				if p, ok := pv.selectedProcess(); ok && pv.onDescribe != nil {
+					pv.onDescribe(p)
 				}
 				return nil
 			case 'N':
@@ -333,6 +408,15 @@ func (pv *ProcessView) setupKeys() {
 				return nil
 			case 'P':
 				pv.model.SetSort(model.SortByPID)
+				return nil
+			case 'C':
+				pv.model.SetSort(model.SortByCPU)
+				return nil
+			case 'M':
+				pv.model.SetSort(model.SortByMem)
+				return nil
+			case 'R':
+				pv.model.SetSort(model.SortByRestarts)
 				return nil
 			case 'U':
 				pv.model.SetSort(model.SortByUptime)
@@ -379,14 +463,14 @@ func (pv *ProcessView) setupKeys() {
 			}
 			return nil
 		case tcell.KeyTab:
-			if suffix := cmdHintSuffix(pv.cmdText); suffix != "" {
+			if suffix := cmdHintSuffix(pv.cmdText, pv.cmdCandidates()); suffix != "" {
 				pv.cmdText += suffix
 				pv.updateCmdBar()
 			}
 			return nil
 		case tcell.KeyBackspace, tcell.KeyBackspace2:
-			if len(pv.cmdText) > 0 {
-				pv.cmdText = pv.cmdText[:len(pv.cmdText)-1]
+			if r := []rune(pv.cmdText); len(r) > 0 {
+				pv.cmdText = string(r[:len(r)-1])
 				pv.updateCmdBar()
 			}
 			return nil
@@ -436,6 +520,8 @@ func (pv *ProcessView) stopFilter() {
 // knownCommands is the list of valid command-mode commands for hint/completion.
 var knownCommands = []string{
 	"flush",
+	"ns ",
+	"q",
 	"q!",
 	"reload all",
 	"restart all",
@@ -443,17 +529,34 @@ var knownCommands = []string{
 	"stop all",
 }
 
-// cmdHintSuffix returns the untyped suffix of the best matching command, or "".
-func cmdHintSuffix(text string) string {
+// cmdHintSuffix returns the untyped suffix of the best matching candidate, or "".
+func cmdHintSuffix(text string, candidates []string) string {
 	if text == "" {
 		return ""
 	}
-	for _, cmd := range knownCommands {
+	for _, cmd := range candidates {
 		if strings.HasPrefix(cmd, text) && cmd != text {
 			return cmd[len(text):]
 		}
 	}
 	return ""
+}
+
+// cmdCandidates returns completion candidates: static commands plus
+// "ns <namespace>" for every namespace present in the process list.
+func (pv *ProcessView) cmdCandidates() []string {
+	candidates := make([]string, 0, len(knownCommands)+4)
+	candidates = append(candidates, knownCommands...)
+	seen := map[string]bool{}
+	for _, p := range pv.model.Raw() {
+		ns := p.PM2Env.Namespace
+		if ns != "" && !seen[ns] {
+			seen[ns] = true
+			candidates = append(candidates, "ns "+ns)
+		}
+	}
+	sort.Strings(candidates)
+	return candidates
 }
 
 // SetOnCommand registers a callback invoked when the user executes a command.
@@ -464,7 +567,7 @@ func (pv *ProcessView) SetOnCommand(fn func(string)) {
 // updateCmdBar refreshes the command bar with current text and hint
 func (pv *ProcessView) updateCmdBar() {
 	pv.cmdBar.Clear()
-	suffix := cmdHintSuffix(pv.cmdText)
+	suffix := cmdHintSuffix(pv.cmdText, pv.cmdCandidates())
 	display := " : " + pv.cmdText
 	if suffix != "" {
 		display += fmt.Sprintf("[gray]%s[-]", suffix)

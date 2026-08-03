@@ -1,14 +1,18 @@
 package pm2
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
 
 // Process represents a PM2 process from `pm2 jlist` output.
 type Process struct {
-	PID        int     `json:"pid"`
-	Name       string  `json:"name"`
-	PM2ID      int     `json:"pm_id"`
-	Monit      Monit   `json:"monit"`
-	PM2Env     PM2Env  `json:"pm2_env"`
+	PID    int    `json:"pid"`
+	Name   string `json:"name"`
+	PM2ID  int    `json:"pm_id"`
+	Monit  Monit  `json:"monit"`
+	PM2Env PM2Env `json:"pm2_env"`
 }
 
 // Monit holds resource usage metrics.
@@ -19,21 +23,29 @@ type Monit struct {
 
 // PM2Env holds the PM2 environment configuration for a process.
 type PM2Env struct {
-	Status        string `json:"status"`
-	PMUptime      int64  `json:"pm_uptime"`
-	RestartTime   int    `json:"restart_time"`
-	PMOutLogPath  string `json:"pm_out_log_path"`
-	PMErrLogPath  string `json:"pm_err_log_path"`
-	ExecMode      string `json:"exec_mode"`
-	NodeVersion   string `json:"node_version"`
+	Status           string `json:"status"`
+	PMUptime         int64  `json:"pm_uptime"`
+	RestartTime      int    `json:"restart_time"`
+	UnstableRestarts int    `json:"unstable_restarts"`
+	PMOutLogPath     string `json:"pm_out_log_path"`
+	PMErrLogPath     string `json:"pm_err_log_path"`
+	ExecMode         string `json:"exec_mode"`
+	NodeVersion      string `json:"node_version"`
+	Namespace        string `json:"namespace"`
+	PMExecPath       string `json:"pm_exec_path"`
+	PMCwd            string `json:"pm_cwd"`
+	ExecInterpreter  string `json:"exec_interpreter"`
+	CreatedAt        int64  `json:"created_at"`
+	Version          string `json:"version"`
+	Autorestart      bool   `json:"autorestart"`
 }
 
 // StatusOnline is the PM2 status for a running process.
 const (
-	StatusOnline   = "online"
-	StatusStopped  = "stopped"
-	StatusErrored  = "errored"
-	StatusStopping = "stopping"
+	StatusOnline    = "online"
+	StatusStopped   = "stopped"
+	StatusErrored   = "errored"
+	StatusStopping  = "stopping"
 	StatusLaunching = "launching"
 )
 
@@ -48,17 +60,22 @@ func (p *Process) Uptime() time.Duration {
 
 // FormatMemory returns memory usage in a human-readable format.
 func (p *Process) FormatMemory() string {
-	mem := p.Monit.Memory
+	mem := float64(p.Monit.Memory)
 	switch {
-	case mem >= 1<<30:
-		return formatFloat(float64(mem)/float64(1<<30)) + " GB"
-	case mem >= 1<<20:
-		return formatFloat(float64(mem)/float64(1<<20)) + " MB"
-	case mem >= 1<<10:
-		return formatFloat(float64(mem)/float64(1<<10)) + " KB"
+	case p.Monit.Memory >= 1<<30:
+		return trimDecimal(mem/(1<<30)) + " GB"
+	case p.Monit.Memory >= 1<<20:
+		return trimDecimal(mem/(1<<20)) + " MB"
+	case p.Monit.Memory >= 1<<10:
+		return trimDecimal(mem/(1<<10)) + " KB"
 	default:
-		return formatFloat(float64(mem)) + " B"
+		return strconv.FormatInt(p.Monit.Memory, 10) + " B"
 	}
+}
+
+// trimDecimal formats with one decimal place, dropping a trailing .0.
+func trimDecimal(f float64) string {
+	return strings.TrimSuffix(strconv.FormatFloat(f, 'f', 1, 64), ".0")
 }
 
 // FormatUptime returns uptime in a human-readable format.
@@ -77,53 +94,11 @@ func (p *Process) FormatUptime() string {
 
 	switch {
 	case days > 0:
-		return formatInt(days) + "d" + formatInt(hours) + "h"
+		return strconv.Itoa(days) + "d" + strconv.Itoa(hours) + "h"
 	case hours > 0:
-		return formatInt(hours) + "h" + formatInt(mins) + "m"
+		return strconv.Itoa(hours) + "h" + strconv.Itoa(mins) + "m"
 	default:
 		secs := int(d.Seconds()) % 60
-		return formatInt(mins) + "m" + formatInt(secs) + "s"
+		return strconv.Itoa(mins) + "m" + strconv.Itoa(secs) + "s"
 	}
-}
-
-func formatFloat(f float64) string {
-	if f == float64(int(f)) {
-		return formatInt(int(f))
-	}
-	// one decimal place
-	return trimTrailingZeros(f)
-}
-
-func trimTrailingZeros(f float64) string {
-	s := ""
-	whole := int(f)
-	frac := int((f - float64(whole)) * 10)
-	if frac == 0 {
-		return formatInt(whole)
-	}
-	s = formatInt(whole) + "." + formatInt(frac)
-	return s
-}
-
-func formatInt(i int) string {
-	if i < 0 {
-		return "-" + formatUint(-i)
-	}
-	return formatUint(i)
-}
-
-func formatUint(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	buf := make([]byte, 0, 10)
-	for i > 0 {
-		buf = append(buf, byte('0'+i%10))
-		i /= 10
-	}
-	// reverse
-	for l, r := 0, len(buf)-1; l < r; l, r = l+1, r-1 {
-		buf[l], buf[r] = buf[r], buf[l]
-	}
-	return string(buf)
 }

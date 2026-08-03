@@ -15,31 +15,46 @@ const helpText = `[::b]pm2ui — Key Bindings[-::-]
 
 [yellow]Process Actions[-]
   Enter          View logs for selected service
-  Space          Toggle multi-select (watch subset of services)
-  u              Start stopped process
-  r              Restart process (--update-env)
-  s              Stop process (confirms)
-  d              Delete process (confirms)
+  i              Describe process (live details, paths, versions)
+  Space          Toggle multi-select (filters logs, enables bulk actions)
+  u              Start stopped process(es)
+  r              Restart process(es) (--update-env)
+  s              Stop process(es) (confirms)
+  d              Delete process(es) (confirms)
+
+  With a Space-selection active, u/r/s/d act on ALL selected services.
 
 [yellow]Sorting (Process Table)[-]
   Shift+N        Sort by name
   Shift+S        Sort by status
   Shift+P        Sort by PID
+  Shift+C        Sort by CPU
+  Shift+M        Sort by memory
+  Shift+R        Sort by restarts
   Shift+U        Sort by uptime
 
 [yellow]Log Panel (right side)[-]
-  t              Toggle stdout/stderr/both (single-service mode)
+  /              Search logs (case-insensitive regex, logs focused)
+  m              Insert a timestamped mark line
+  c              Clear panel (keeps tailing, search and selection)
+  t              Toggle stdout/stderr/both
   a              Toggle autoscroll
   w              Toggle word wrap
-  Esc            Return to all-services / multi-select logs
+  p              Pause/resume log tailing
+  T              Toggle arrival timestamps
+  f              Fullscreen logs
+  S              Save log buffer to file (logs focused)
+  ↑/PgUp/k/g     Scroll up (pauses tailing); G/End resumes
+  Esc            Back to process list (leaves single-service view)
 
-[yellow]Commands (:)[-]
+[yellow]Commands (:) — works from any pane, Tab completes[-]
+  :ns <name>     Scope table to a pm2 namespace (:ns clears)
   :restart all   Restart all processes
   :stop all      Stop all processes (confirms)
   :reload all    Graceful reload (cluster mode)
   :save          Persist process list to disk
   :flush         Clear all log files
-  :q!            Quit
+  :q / :q!       Quit
 
 [yellow]Log History[-]
   0              Tail (live from end)
@@ -48,9 +63,11 @@ const helpText = `[::b]pm2ui — Key Bindings[-::-]
   4 / 5 / 6      Last 200 / 500 / 1000 lines
 
 [yellow]General[-]
-  l              Focus logs (scroll)
+  l              Focus logs (aqua border = focused pane)
   Esc            Back to process list
   ?              Toggle this help
+  Mouse          Click to focus/select; wheel-up pauses tailing
+                 (disable with mouseEnabled: false in config)
 
 [gray]Press Esc or ? to close[-]`
 

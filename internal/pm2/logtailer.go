@@ -2,12 +2,15 @@ package pm2
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rivo/tview"
 )
 
 // LogStream indicates which log stream to tail.
@@ -22,10 +25,12 @@ const (
 type FilterMode int
 
 const (
-	FilterTail  FilterMode = iota
+	FilterTail FilterMode = iota
 	FilterHead
 	FilterLastN
 )
+
+const defaultHeadLines = 200
 
 type LogFilter struct {
 	Mode  FilterMode
@@ -34,38 +39,38 @@ type LogFilter struct {
 
 // LogLine represents a single line from a log file.
 type LogLine struct {
-	Text        string
+	Text        string // tview-tagged (ANSI converted)
+	Plain       string // ANSI stripped, no tview tags
 	Stream      LogStream
 	ProcessName string
+	Time        time.Time
 }
 
 // MultiLogTailer merges log output from multiple processes into one channel.
+// Processes can be added and removed while running.
 type MultiLogTailer struct {
-	procs   []Process
-	tailers []*LogTailer
+	filter  LogFilter
 	lines   chan LogLine
 	stopCh  chan struct{}
 	mu      sync.Mutex
+	tailers map[string]*LogTailer
+	stream  LogStream
+	started bool
 	stopped bool
 }
 
 // NewMultiLogTailer creates a tailer that merges logs from all given processes.
+// Each process gets the full filter line budget.
 func NewMultiLogTailer(procs []Process, filter LogFilter) *MultiLogTailer {
-	perSvcFilter := filter
-	if filter.Mode == FilterLastN && len(procs) > 1 {
-		n := filter.Lines / len(procs)
-		if n < 1 {
-			n = 1
-		}
-		perSvcFilter.Lines = n
-	}
 	mt := &MultiLogTailer{
-		procs:  procs,
-		lines:  make(chan LogLine, 1000),
-		stopCh: make(chan struct{}),
+		filter:  filter,
+		stream:  LogBoth,
+		lines:   make(chan LogLine, 1000),
+		stopCh:  make(chan struct{}),
+		tailers: make(map[string]*LogTailer, len(procs)),
 	}
 	for _, p := range procs {
-		mt.tailers = append(mt.tailers, NewLogTailer(p.PM2Env.PMOutLogPath, p.PM2Env.PMErrLogPath, perSvcFilter))
+		mt.tailers[p.Name] = NewLogTailer(p.PM2Env.PMOutLogPath, p.PM2Env.PMErrLogPath, filter)
 	}
 	return mt
 }
@@ -75,27 +80,83 @@ func (mt *MultiLogTailer) Lines() <-chan LogLine {
 	return mt.lines
 }
 
+// SetStream changes which streams to tail across all processes.
+func (mt *MultiLogTailer) SetStream(s LogStream) {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	mt.stream = s
+	for _, t := range mt.tailers {
+		t.SetStream(s)
+	}
+}
+
+// Stream returns the current stream mode.
+func (mt *MultiLogTailer) Stream() LogStream {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	return mt.stream
+}
+
 // Start begins tailing all processes and merging their output.
 func (mt *MultiLogTailer) Start() {
-	for i, t := range mt.tailers {
-		t := t
-		name := mt.procs[i].Name
-		t.Start()
-		go func() {
-			for {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if mt.started || mt.stopped {
+		return
+	}
+	mt.started = true
+	for name, t := range mt.tailers {
+		mt.run(name, t)
+	}
+}
+
+// run starts a tailer and forwards its lines. Caller must hold mu.
+func (mt *MultiLogTailer) run(name string, t *LogTailer) {
+	t.SetStream(mt.stream)
+	t.Start()
+	go func() {
+		for {
+			select {
+			case line := <-t.Lines():
+				line.ProcessName = name
 				select {
-				case line := <-t.Lines():
-					line.ProcessName = name
-					select {
-					case mt.lines <- line:
-					case <-mt.stopCh:
-						return
-					}
+				case mt.lines <- line:
 				case <-mt.stopCh:
 					return
 				}
+			case <-t.Done():
+				return
+			case <-mt.stopCh:
+				return
 			}
-		}()
+		}
+	}()
+}
+
+// Add begins tailing a new process without disturbing existing tailers.
+func (mt *MultiLogTailer) Add(p Process) {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if mt.stopped {
+		return
+	}
+	if _, ok := mt.tailers[p.Name]; ok {
+		return
+	}
+	t := NewLogTailer(p.PM2Env.PMOutLogPath, p.PM2Env.PMErrLogPath, mt.filter)
+	mt.tailers[p.Name] = t
+	if mt.started {
+		mt.run(p.Name, t)
+	}
+}
+
+// Remove stops tailing a process. Already-buffered lines are unaffected.
+func (mt *MultiLogTailer) Remove(name string) {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if t, ok := mt.tailers[name]; ok {
+		t.Stop()
+		delete(mt.tailers, name)
 	}
 }
 
@@ -141,6 +202,11 @@ func (lt *LogTailer) Lines() <-chan LogLine {
 	return lt.lines
 }
 
+// Done is closed when the tailer is stopped.
+func (lt *LogTailer) Done() <-chan struct{} {
+	return lt.stopCh
+}
+
 // SetStream changes which streams to tail.
 func (lt *LogTailer) SetStream(s LogStream) {
 	lt.mu.Lock()
@@ -175,26 +241,56 @@ func (lt *LogTailer) Stop() {
 	}
 }
 
+// tailFile follows a log file with tail -F semantics: it waits for the file
+// to exist, survives truncation (pm2 flush) and rotation (rename+recreate),
+// and holds partial writes until the newline arrives.
 func (lt *LogTailer) tailFile(path string, stream LogStream) {
+	// If the file doesn't exist yet, everything in it once it appears is new
+	// content — read it from the start instead of seeking to the end.
 	f, err := os.Open(path)
+	fresh := false
 	if err != nil {
-		lt.sendLine("(cannot open log: "+err.Error()+")", stream)
-		return
-	}
-	defer f.Close()
-
-	switch lt.filter.Mode {
-	case FilterLastN:
-		for _, line := range readLastLines(f, lt.filter.Lines) {
-			lt.sendLine(line, stream)
+		if f = lt.openWhenReady(path); f == nil {
+			return
 		}
-	case FilterHead:
-		readFromStart(f)
-	default:
-		readLastLines(f, 0)
+		fresh = true
+	}
+	defer func() { f.Close() }()
+
+	var offset int64
+
+	switch {
+	case lt.filter.Mode == FilterHead:
+		n := lt.filter.Lines
+		if n <= 0 {
+			n = defaultHeadLines
+		}
+		lt.sendHead(f, n, stream)
+		return
+	case fresh:
+		// offset stays 0: stream the newborn file from the top.
+	case lt.filter.Mode == FilterLastN:
+		lines, off := readLastLines(f, lt.filter.Lines)
+		for _, line := range lines {
+			if lt.shouldSend(stream) {
+				lt.sendLine(line, stream)
+			}
+		}
+		offset = off
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return
+		}
+	default: // FilterTail
+		off, err := f.Seek(0, io.SeekEnd)
+		if err != nil {
+			return
+		}
+		offset = off
 	}
 
 	reader := bufio.NewReader(f)
+	var pending strings.Builder
+
 	for {
 		select {
 		case <-lt.stopCh:
@@ -202,24 +298,100 @@ func (lt *LogTailer) tailFile(path string, stream LogStream) {
 		default:
 		}
 
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				time.Sleep(100 * time.Millisecond)
-				continue
+		chunk, err := reader.ReadString('\n')
+		offset += int64(len(chunk))
+		if err == nil {
+			line := strings.TrimRight(pending.String()+chunk, "\r\n")
+			pending.Reset()
+			if lt.shouldSend(stream) {
+				lt.sendLine(line, stream)
 			}
+			continue
+		}
+		if err != io.EOF {
 			return
 		}
 
-		line = strings.TrimRight(line, "\n\r")
-		if lt.shouldSend(stream) {
-			lt.sendLine(line, stream)
+		// EOF: hold any partial fragment until its newline arrives.
+		pending.WriteString(chunk)
+
+		if !lt.sleepOrStop(100 * time.Millisecond) {
+			return
+		}
+
+		pathInfo, statErr := os.Stat(path)
+		if statErr != nil {
+			// File deleted; wait for it to come back.
+			f.Close()
+			if f = lt.openWhenReady(path); f == nil {
+				return
+			}
+			reader = bufio.NewReader(f)
+			offset = 0
+			pending.Reset()
+			continue
+		}
+
+		fInfo, err := f.Stat()
+		if err != nil || !os.SameFile(fInfo, pathInfo) {
+			// Rotated: reopen the new file from the start.
+			f.Close()
+			if f = lt.openWhenReady(path); f == nil {
+				return
+			}
+			reader = bufio.NewReader(f)
+			offset = 0
+			pending.Reset()
+			continue
+		}
+
+		if pathInfo.Size() < offset {
+			// Truncated in place (pm2 flush): start over from the top.
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				return
+			}
+			reader.Reset(f)
+			offset = 0
+			pending.Reset()
 		}
 	}
 }
 
-func readFromStart(f *os.File) {
-	_, _ = f.Seek(0, io.SeekStart)
+// openWhenReady opens path, polling until it exists or the tailer is stopped.
+func (lt *LogTailer) openWhenReady(path string) *os.File {
+	for {
+		f, err := os.Open(path)
+		if err == nil {
+			return f
+		}
+		if !lt.sleepOrStop(500 * time.Millisecond) {
+			return nil
+		}
+	}
+}
+
+// sleepOrStop waits d, returning false if the tailer was stopped meanwhile.
+func (lt *LogTailer) sleepOrStop(d time.Duration) bool {
+	select {
+	case <-lt.stopCh:
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+// sendHead sends the first n lines of the file and returns.
+func (lt *LogTailer) sendHead(f *os.File, n int, stream LogStream) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return
+	}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for i := 0; i < n && scanner.Scan(); i++ {
+		if lt.shouldSend(stream) {
+			lt.sendLine(strings.TrimRight(scanner.Text(), "\r"), stream)
+		}
+	}
 }
 
 func (lt *LogTailer) shouldSend(stream LogStream) bool {
@@ -229,130 +401,85 @@ func (lt *LogTailer) shouldSend(stream LogStream) bool {
 }
 
 func (lt *LogTailer) sendLine(text string, stream LogStream) {
-	converted := ansiToTview(text)
+	line := LogLine{
+		Text:   tview.TranslateANSI(text),
+		Plain:  stripANSI(text),
+		Stream: stream,
+		Time:   time.Now(),
+	}
 	select {
-	case lt.lines <- LogLine{Text: converted, Stream: stream}:
+	case lt.lines <- line:
 	case <-lt.stopCh:
 	}
 }
 
-// readLastLines reads the last n lines from a file.
-func readLastLines(f *os.File, n int) []string {
-	if n == 0 {
-		_, _ = f.Seek(0, io.SeekEnd)
-		return nil
-	}
-
+// readLastLines reads the last n complete lines of f and returns them with
+// the offset at which live tailing should resume. A trailing line without a
+// newline is still being written and is left for the live tail.
+func readLastLines(f *os.File, n int) ([]string, int64) {
 	info, err := f.Stat()
-	if err != nil || info.Size() == 0 {
-		return nil
+	if err != nil {
+		return nil, 0
 	}
-
-	// Read from the end
 	size := info.Size()
-	bufSize := int64(64 * 1024)
-	if bufSize > size {
-		bufSize = size
+	if n <= 0 || size == 0 {
+		return nil, size
 	}
 
-	offset := size - bufSize
-	if offset < 0 {
-		offset = 0
+	const chunkSize = 64 * 1024
+	const maxScan = 4 * 1024 * 1024
+
+	var (
+		data  []byte
+		start = size
+	)
+	for start > 0 && int64(len(data)) < maxScan {
+		chunk := min(int64(chunkSize), start)
+		start -= chunk
+		buf := make([]byte, chunk)
+		if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+			return nil, size
+		}
+		data = append(buf, data...)
+		if bytes.Count(data, []byte{'\n'}) > n {
+			break
+		}
 	}
 
-	_, _ = f.Seek(offset, io.SeekStart)
-	buf := make([]byte, bufSize)
-	nRead, _ := io.ReadFull(f, buf)
-	buf = buf[:nRead]
-
-	// Split into lines
-	lines := strings.Split(string(buf), "\n")
-	// If we started mid-line and not at beginning of file, drop first partial line
-	if offset > 0 && len(lines) > 0 {
-		lines = lines[1:]
-	}
-	// Remove trailing empty
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+	offset := size
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		last := bytes.LastIndexByte(data, '\n')
+		if last < 0 {
+			// No complete line in the scanned window; tail live only.
+			if start == 0 {
+				return nil, 0
+			}
+			return nil, size
+		}
+		offset = size - int64(len(data)-last-1)
+		data = data[:last+1]
 	}
 
+	text := strings.TrimRight(string(data), "\n")
+	if text == "" {
+		return nil, offset
+	}
+	lines := strings.Split(text, "\n")
+	if start > 0 && len(lines) > 0 {
+		lines = lines[1:] // first scanned line may be partial
+	}
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-
-	// Seek to end for future reads
-	_, _ = f.Seek(0, io.SeekEnd)
-
-	return lines
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], "\r")
+	}
+	return lines, offset
 }
 
-// ansiToTview converts ANSI escape codes to tview color tags.
-var ansiRegex = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+var ansiEscapeRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
-func ansiToTview(s string) string {
-	var b strings.Builder
-	last := 0
-	for _, loc := range ansiRegex.FindAllStringIndex(s, -1) {
-		segment := s[last:loc[0]]
-		b.WriteString(strings.ReplaceAll(segment, "[", "[[]"))
-		match := s[loc[0]:loc[1]]
-		codes := ansiRegex.FindStringSubmatch(match)
-		if len(codes) >= 2 {
-			b.WriteString(ansiCodeToTag(codes[1]))
-		}
-		last = loc[1]
-	}
-	b.WriteString(strings.ReplaceAll(s[last:], "[", "[[]"))
-	return b.String()
-}
-
-func ansiCodeToTag(code string) string {
-	parts := strings.Split(code, ";")
-	for _, p := range parts {
-		switch p {
-		case "0", "":
-			return "[-:-:-]"
-		case "1":
-			return "[::b]"
-		case "2":
-			return "[::d]"
-		case "3":
-			return "[::i]"
-		case "4":
-			return "[::u]"
-		case "30":
-			return "[black]"
-		case "31":
-			return "[red]"
-		case "32":
-			return "[green]"
-		case "33":
-			return "[yellow]"
-		case "34":
-			return "[blue]"
-		case "35":
-			return "[purple]"
-		case "36":
-			return "[cyan]"
-		case "37":
-			return "[white]"
-		case "90":
-			return "[gray]"
-		case "91":
-			return "[red]"
-		case "92":
-			return "[green]"
-		case "93":
-			return "[yellow]"
-		case "94":
-			return "[blue]"
-		case "95":
-			return "[purple]"
-		case "96":
-			return "[cyan]"
-		case "97":
-			return "[white]"
-		}
-	}
-	return ""
+// stripANSI removes ANSI escape sequences.
+func stripANSI(s string) string {
+	return ansiEscapeRegex.ReplaceAllString(s, "")
 }

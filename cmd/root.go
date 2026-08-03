@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/DillonBarker/pm2ui/internal/config"
 	"github.com/DillonBarker/pm2ui/internal/view"
 )
 
@@ -18,7 +19,8 @@ func Execute() {
 		}
 	}
 
-	layout := view.NewLayout()
+	cfg, cfgErr := config.Load()
+	layout := view.NewLayout(cfg, cfgErr)
 	if err := layout.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
