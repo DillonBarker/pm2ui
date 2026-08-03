@@ -11,7 +11,8 @@ type WatcherListener func([]Process)
 // ErrorListener is called when polling encounters an error.
 type ErrorListener func(error)
 
-// Watcher polls pm2 jlist periodically and notifies listeners.
+// Watcher polls pm2 jlist periodically and notifies listeners. Listener
+// callbacks always run on the single poll goroutine.
 type Watcher struct {
 	client         *Client
 	interval       time.Duration
@@ -19,15 +20,17 @@ type Watcher struct {
 	errorListeners []ErrorListener
 	mu             sync.Mutex
 	stopCh         chan struct{}
+	refreshCh      chan struct{}
 	lastErr        error
 }
 
 // NewWatcher creates a new watcher that polls at the given interval.
 func NewWatcher(client *Client, interval time.Duration) *Watcher {
 	return &Watcher{
-		client:   client,
-		interval: interval,
-		stopCh:   make(chan struct{}),
+		client:    client,
+		interval:  interval,
+		stopCh:    make(chan struct{}),
+		refreshCh: make(chan struct{}, 1),
 	}
 }
 
@@ -55,9 +58,12 @@ func (w *Watcher) Stop() {
 	close(w.stopCh)
 }
 
-// Refresh triggers an immediate poll.
+// Refresh triggers an immediate poll on the poll goroutine.
 func (w *Watcher) Refresh() {
-	go w.fetch()
+	select {
+	case w.refreshCh <- struct{}{}:
+	default: // one already queued
+	}
 }
 
 // LastError returns the last error from polling.
@@ -77,6 +83,8 @@ func (w *Watcher) poll() {
 		case <-w.stopCh:
 			return
 		case <-ticker.C:
+			w.fetch()
+		case <-w.refreshCh:
 			w.fetch()
 		}
 	}

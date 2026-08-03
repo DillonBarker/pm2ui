@@ -13,6 +13,7 @@ type FlashLevel int
 
 const (
 	FlashInfo FlashLevel = iota
+	FlashWarn
 	FlashError
 )
 
@@ -20,6 +21,9 @@ const (
 type FlashWidget struct {
 	*tview.TextView
 	app *tview.Application
+	// gen invalidates pending clear timers when a newer message arrives.
+	// Only touched on the event loop.
+	gen int
 }
 
 // NewFlashWidget creates a new flash message widget.
@@ -37,19 +41,27 @@ func (f *FlashWidget) SetApp(app *tview.Application) {
 	f.app = app
 }
 
-// Show displays a flash message that auto-clears after 3 seconds.
+// Show displays a flash message that auto-clears after 3 seconds. Must be
+// called from the event loop.
 func (f *FlashWidget) Show(level FlashLevel, msg string) {
 	color := "green"
-	if level == FlashError {
+	switch level {
+	case FlashWarn:
+		color = "yellow"
+	case FlashError:
 		color = "red"
 	}
 	f.SetText(fmt.Sprintf("[%s]%s[-]", color, msg))
 
+	f.gen++
+	gen := f.gen
 	go func() {
 		time.Sleep(3 * time.Second)
 		if f.app != nil {
 			f.app.QueueUpdateDraw(func() {
-				f.SetText("")
+				if gen == f.gen { // don't clear a newer message
+					f.SetText("")
+				}
 			})
 		}
 	}()

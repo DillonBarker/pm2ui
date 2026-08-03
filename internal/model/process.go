@@ -11,10 +11,14 @@ import (
 // SortColumn identifies a column for sorting.
 type SortColumn int
 
+// Values match table column order: NAME, STATUS, PID, CPU, MEM, ↺, UPTIME.
 const (
 	SortByName SortColumn = iota
 	SortByStatus
 	SortByPID
+	SortByCPU
+	SortByMem
+	SortByRestarts
 	SortByUptime
 )
 
@@ -27,6 +31,7 @@ type ProcessTable struct {
 	raw       []pm2.Process
 	filtered  []pm2.Process
 	filter    string
+	namespace string
 	sortCol   SortColumn
 	sortAsc   bool
 	listeners []ProcessTableListener
@@ -100,6 +105,23 @@ func (pt *ProcessTable) Filter() string {
 	return pt.filter
 }
 
+// SetNamespace scopes the view to a pm2 namespace; empty clears the scope.
+// Like SetFilter it does NOT notify listeners — event-loop callers must
+// refresh the UI directly.
+func (pt *ProcessTable) SetNamespace(ns string) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+	pt.namespace = ns
+	pt.recompute()
+}
+
+// Namespace returns the active namespace scope ("" = all).
+func (pt *ProcessTable) Namespace() string {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+	return pt.namespace
+}
+
 // SortInfo returns the current sort column and direction.
 func (pt *ProcessTable) SortInfo() (SortColumn, bool) {
 	pt.mu.RLock()
@@ -132,20 +154,19 @@ func (pt *ProcessTable) TotalCount() int {
 	return len(pt.raw)
 }
 
-// recompute applies filter and sort. Must be called with mu held.
+// recompute applies namespace scope, name filter and sort. Must be called
+// with mu held.
 func (pt *ProcessTable) recompute() {
-	// Filter
-	if pt.filter == "" {
-		pt.filtered = make([]pm2.Process, len(pt.raw))
-		copy(pt.filtered, pt.raw)
-	} else {
-		pt.filtered = pt.filtered[:0]
-		lower := strings.ToLower(pt.filter)
-		for _, p := range pt.raw {
-			if strings.Contains(strings.ToLower(p.Name), lower) {
-				pt.filtered = append(pt.filtered, p)
-			}
+	lower := strings.ToLower(pt.filter)
+	pt.filtered = pt.filtered[:0]
+	for _, p := range pt.raw {
+		if pt.namespace != "" && p.PM2Env.Namespace != pt.namespace {
+			continue
 		}
+		if lower != "" && !strings.Contains(strings.ToLower(p.Name), lower) {
+			continue
+		}
+		pt.filtered = append(pt.filtered, p)
 	}
 
 	// Sort
@@ -161,6 +182,12 @@ func (pt *ProcessTable) recompute() {
 			less = a.PM2Env.Status < b.PM2Env.Status
 		case SortByPID:
 			less = a.PID < b.PID
+		case SortByCPU:
+			less = a.Monit.CPU < b.Monit.CPU
+		case SortByMem:
+			less = a.Monit.Memory < b.Monit.Memory
+		case SortByRestarts:
+			less = a.PM2Env.RestartTime < b.PM2Env.RestartTime
 		case SortByUptime:
 			less = a.Uptime() < b.Uptime()
 		}
