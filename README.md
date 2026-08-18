@@ -9,6 +9,7 @@ A terminal UI for [PM2](https://pm2.keymetrics.io/) — manage your processes wi
 - **Log search** — case-insensitive regex with highlighted matches (`/`)
 - **Multi-select** — Space-select services to filter the log stream and run bulk restart/stop/delete
 - **Crash alerts** — flash notifications when a service errors or its restart count climbs
+- **Tab-title status** — terminal window/tab title tracks the whole set (`pm2ui ●6 ✖api,worker`), so a background tab still shows what's down
 - **Log tools** — pause, timestamped marks, fullscreen, save to file, history depth presets
 - **Describe view** — live per-process detail (script path, versions, log paths, stats)
 - **Namespaces** — scope the table to a pm2 namespace (`:ns`)
@@ -185,6 +186,7 @@ maxLogLines: 5000      # log buffer cap (fair-shared across services)
 logBatchInterval: 50ms # how often new log lines are flushed to screen
 splitRatio: 2          # width of the logs pane relative to the table (1-5)
 mouseEnabled: true     # click to focus/select, wheel scroll
+windowTitle: true      # summarise status in the terminal window/tab title
 ```
 
 Invalid config falls back to defaults and shows a warning on start.

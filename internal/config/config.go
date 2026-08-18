@@ -18,6 +18,7 @@ type Config struct {
 	LogBatchInterval time.Duration // render flush interval
 	SplitRatio       int           // logs pane weight vs process pane (1..5)
 	MouseEnabled     bool          // mouse support (wheel scroll, click select)
+	WindowTitle      bool          // set the terminal window/tab title to a status summary
 }
 
 // Default returns the built-in settings.
@@ -30,6 +31,7 @@ func Default() Config {
 		LogBatchInterval: 50 * time.Millisecond,
 		SplitRatio:       2,
 		MouseEnabled:     true,
+		WindowTitle:      true,
 	}
 }
 
@@ -43,6 +45,7 @@ type fileConfig struct {
 	LogBatchInterval string `yaml:"logBatchInterval"`
 	SplitRatio       *int   `yaml:"splitRatio"`
 	MouseEnabled     *bool  `yaml:"mouseEnabled"`
+	WindowTitle      *bool  `yaml:"windowTitle"`
 }
 
 // Path returns the config file location: $XDG_CONFIG_HOME/pm2ui/config.yaml,
@@ -105,6 +108,9 @@ func loadFrom(path string) (Config, error) {
 	}
 	if fc.MouseEnabled != nil {
 		cfg.MouseEnabled = *fc.MouseEnabled
+	}
+	if fc.WindowTitle != nil {
+		cfg.WindowTitle = *fc.WindowTitle
 	}
 	if fc.LogBatchInterval != "" {
 		d, err := time.ParseDuration(fc.LogBatchInterval)

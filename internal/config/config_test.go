@@ -19,7 +19,7 @@ func TestLoadFrom_MissingFileReturnsDefaults(t *testing.T) {
 
 func TestLoadFrom_PartialOverride(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	content := "refreshInterval: 5s\nmaxLogLines: 9000\nsplitRatio: 3\nallTailLines: 80\nmouseEnabled: false\n"
+	content := "refreshInterval: 5s\nmaxLogLines: 9000\nsplitRatio: 3\nallTailLines: 80\nmouseEnabled: false\nwindowTitle: false\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +42,9 @@ func TestLoadFrom_PartialOverride(t *testing.T) {
 	}
 	if cfg.MouseEnabled {
 		t.Error("MouseEnabled = true, want explicit false honored")
+	}
+	if cfg.WindowTitle {
+		t.Error("WindowTitle = true, want explicit false honored")
 	}
 	// Untouched keys keep defaults.
 	if cfg.DefaultTailLines != Default().DefaultTailLines {

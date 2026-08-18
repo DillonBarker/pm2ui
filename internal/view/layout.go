@@ -34,6 +34,9 @@ type Layout struct {
 	describeView *tview.TextView
 	// prevProcs is only touched on the watcher's poll goroutine.
 	prevProcs map[string]procSnapshot
+	// windowTitle is the last title pushed to the terminal; only touched on
+	// the watcher's poll goroutine.
+	windowTitle string
 }
 
 type procSnapshot struct {
@@ -158,6 +161,7 @@ func (l *Layout) Run() error {
 	initialized := false
 	l.watcher.OnUpdate(func(procs []pm2.Process) {
 		l.processModel.Update(procs)
+		l.updateWindowTitle(procs)
 		setChanged := l.notifyStateChanges(procs)
 		if !initialized {
 			initialized = true
@@ -210,6 +214,10 @@ func (l *Layout) Run() error {
 			})
 		}()
 	}
+
+	// Runs after tcell finalizes the screen, so the terminal is still there to
+	// take the sequence.
+	defer l.app.RestoreTerminalTitle()
 
 	return l.app.Run()
 }
@@ -521,6 +529,24 @@ func (l *Layout) notifyStateChanges(procs []pm2.Process) (setChanged bool) {
 
 // refreshDescribe re-renders the describe page with fresh process data.
 // Runs on the watcher goroutine.
+// updateWindowTitle pushes a status summary to the terminal window/tab title
+// so a glance at the tab bar shows what's up and what's down. It deliberately
+// summarises every pm2 process, ignoring the table's filter and namespace
+// scope — the tab is the at-a-glance view of the whole set. Poll goroutine only.
+func (l *Layout) updateWindowTitle(procs []pm2.Process) {
+	if !l.cfg.WindowTitle {
+		return
+	}
+	title := ui.WindowTitle(procs)
+	if title == l.windowTitle {
+		return
+	}
+	l.windowTitle = title
+	l.app.QueueUpdate(func() {
+		l.app.SetTerminalTitle(title)
+	})
+}
+
 func (l *Layout) refreshDescribe(procs []pm2.Process) {
 	name := l.describeName
 	if name == "" {
