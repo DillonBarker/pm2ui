@@ -1,0 +1,46 @@
+internal/ui/termtitle.go
+  s_037c1ebd784b59::t_25235ecdf007cc 1-52,55
+  s_037c1ebd784b59::t_91a6c0233b82dd 53-54
+README.md
+  s_037c1ebd784b59::t_7b511c5faa2909 189
+  s_037c1ebd784b59::t_6134133861bbe2 12
+internal/config/config.go
+  s_037c1ebd784b59::t_e5a6b07759186b 21
+  s_037c1ebd784b59::t_c4a8bca2b82c6c 34
+  s_037c1ebd784b59::t_dfed550983f2b4 112-114
+  s_037c1ebd784b59::t_8c8a264c8e45a1 48
+internal/ui/app.go
+  s_037c1ebd784b59::t_3442a8feab83df 10-12
+  s_037c1ebd784b59::t_fb6460753775c3 23,31-43
+internal/ui/title_test.go
+  s_037c1ebd784b59::t_210e3328b202c4 1-97
+internal/ui/title.go
+  s_037c1ebd784b59::t_bf8bb59419c1cf 1-80
+internal/view/layout.go
+  s_037c1ebd784b59::t_9b948db8cb0939 37-39
+  s_037c1ebd784b59::t_47dd7f66b05174 546
+  s_037c1ebd784b59::t_2985f174bc162d 164
+  s_037c1ebd784b59::t_8059f65cdc57cc 218-221
+  s_037c1ebd784b59::t_eb54a963668ee5 532-545,547-549
+internal/config/config_test.go
+  s_037c1ebd784b59::t_a2bc94067862ae 46-48
+  s_037c1ebd784b59::t_c7cfe9ee3554d9 22
+internal/ui/termtitle_test.go
+  s_037c1ebd784b59::t_02c785eccabce4 1-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "3585823a18b0a46d77c50d40a6d4db5c71403d9a",
+  "prompts": {},
+  "sessions": {
+    "s_037c1ebd784b59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "14676e11-c374-4b56-a4c6-d6e94880e0d6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dillon Barker <barker.dill98@gmail.com>"
+    }
+  }
+}
